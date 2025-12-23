@@ -1,544 +1,375 @@
 
-import React, { useState, useEffect, useRef } from 'react';
-import { initializeApp, getApps } from 'firebase/app';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { 
-  getAuth, signInAnonymously, onAuthStateChanged 
-} from 'firebase/auth';
-import { 
-  getFirestore, doc, setDoc, collection, onSnapshot, 
-  addDoc, updateDoc, runTransaction 
-} from 'firebase/firestore';
-import { 
-  User, Zap, Shield, Sword, Brain, Timer, CheckCircle2, 
-  Plus, Coins, ShoppingBag, X, Play, Settings,
-  ShieldCheck, Medal, Crown, Camera, Sparkles,
-  Globe, MessageSquare, Loader2, Flame, Skull, Ghost, Wand2, Axe, 
-  AlertTriangle, Clock, Map, BookOpen, Download, Cpu, Activity
+  Play, Pause, RotateCcw, Settings, History, 
+  X, Zap, Coffee, Shield, AlertCircle, Loader2, Eye, EyeOff, Smartphone
 } from 'lucide-react';
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
+import { getFirestore, collection, addDoc, onSnapshot, query, limit } from 'firebase/firestore';
 
-// --- SYSTEM CORE CONFIG (INTEGRATED) ---
-const firebaseConfig = {
-  apiKey: "AIzaSyAw-WTRYxBG_qowDO2bdlCnZZUn6zTs_fo",
-  authDomain: "system-c6465.firebaseapp.com",
-  projectId: "system-c6465",
-  storageBucket: "system-c6465.firebasestorage.app",
-  messagingSenderId: "276543243748",
-  appId: "1:276543243748:web:16e793767fdae5097cb3f1",
-  measurementId: "G-9FCTH7WMRD"
-};
-
-const GEMINI_API_KEY = "AIzaSyDq5CemlgjoBP0OJm1U4ihUZ3Y5f--YqvQ"; 
-const APP_ID = "shadow-monarch-production-v1";
-
-// Initialize System Nodes
-const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
+// --- Firebase Configuration ---
+const firebaseConfig = JSON.parse(__firebase_config);
+const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
-
-// --- DESIGN TOKENS ---
-const RANKS = ['E', 'D', 'C', 'B', 'A', 'S'];
-const CLASSES = {
-  WARRIOR: { name: "Warrior", stat: "strength", icon: <Axe size={20}/>, color: "text-red-500" },
-  MAGE: { name: "Mage", stat: "intelligence", icon: <Wand2 size={20}/>, color: "text-blue-400" },
-  ASSASSIN: { name: "Assassin", stat: "agility", icon: <Zap size={20}/>, color: "text-purple-400" },
-  GUARDIAN: { name: "Guardian", stat: "willpower", icon: <Shield size={20}/>, color: "text-emerald-400" }
-};
-const STAT_ICONS = { strength: <Sword size={16}/>, intelligence: <Brain size={16}/>, willpower: <Shield size={16}/>, agility: <Timer size={16}/> };
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'aura-focus-v7';
 
 export default function App() {
-  const [bootState, setBootState] = useState('INIT'); 
+  // --- Core State ---
+  const [settings, setSettings] = useState({ work: 25, shortBreak: 5 });
+  const [mode, setMode] = useState('work'); // 'work' | 'shortBreak'
+  const [timeLeft, setTimeLeft] = useState(25 * 60);
+  const [isActive, setIsActive] = useState(false);
   const [user, setUser] = useState(null);
-  const [profile, setProfile] = useState(null);
-
-  // Global Sync States
-  const [leaderboard, setLeaderboard] = useState([]);
-  const [globalFeed, setGlobalFeed] = useState([]);
-  const [worldBoss, setWorldBoss] = useState(null);
-  const [gates, setGates] = useState([]);
-  const [shop, setShop] = useState([]);
-
-  // User Sync States
-  const [quests, setQuests] = useState([]);
-  const [shadowArmy, setShadowArmy] = useState([]);
-
-  // UI Navigation
-  const [activeTab, setActiveTab] = useState('quests');
-  const [showAdd, setShowAdd] = useState(false);
-  const [showAdmin, setShowAdmin] = useState(false);
-  const [adminKey, setAdminKey] = useState("");
-  const [notif, setNotif] = useState(null);
   
-  // Pomodoro & AI
-  const [isFocusing, setIsFocusing] = useState(false);
-  const [timerSec, setTimerSec] = useState(1500);
-  const [focusXp, setFocusXp] = useState(0);
-  const [backlash, setBacklash] = useState(false);
-  const [verifying, setVerifying] = useState(null); 
-  const [aiWorking, setAiWorking] = useState(false);
-  const [ariseObj, setAriseObj] = useState(null);
-  const fileRef = useRef(null);
+  // --- Tracking State ---
+  const [isFocused, setIsFocused] = useState(true);
+  const [distractions, setDistractions] = useState(0);
+  const [appSwitches, setAppSwitches] = useState(0);
+  const [isAiLoading, setIsAiLoading] = useState(false);
+  const [isAiActive, setIsAiActive] = useState(false);
 
-  // 1. BOOTLOADER (Rule 3)
-  useEffect(() => {
-    const initAuth = async () => {
-        try {
-            const u = await signInAnonymously(auth);
-            setUser(u.user);
-            setBootState('SYNC');
-        } catch (e) { console.error("Auth Error", e); }
-    };
-    initAuth();
-  }, []);
+  // --- UI State ---
+  const [showEditor, setShowEditor] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
+  const [history, setHistory] = useState([]);
 
-  // 2. DATA GRID SYNCHRONIZATION (Rule 1)
-  useEffect(() => {
-    if (!user) return;
-    const publicPath = (c) => collection(db, 'artifacts', APP_ID, 'public', 'data', c);
-    const userPath = (c) => collection(db, 'artifacts', APP_ID, 'users', user.uid, c);
-
-    const unsubs = [
-      onSnapshot(doc(db, 'artifacts', APP_ID, 'users', user.uid, 'profile', 'data'), s => {
-        setProfile(s.exists() ? s.data() : null);
-        setBootState('READY');
-      }),
-      onSnapshot(userPath('quests'), s => setQuests(s.docs.map(d => ({ id: d.id, ...d.data() })))),
-      onSnapshot(userPath('shadows'), s => setShadowArmy(s.docs.map(d => ({ id: d.id, ...d.data() })))),
-      onSnapshot(publicPath('dpps'), s => setGates(s.docs.map(d => ({ id: d.id, ...d.data() })))),
-      onSnapshot(publicPath('shop'), s => setShop(s.docs.map(d => ({ id: d.id, ...d.data() })))),
-      onSnapshot(doc(db, 'artifacts', APP_ID, 'public', 'data', 'world_boss', 'active'), s => setWorldBoss(s.exists() ? s.data() : null)),
-      onSnapshot(publicPath('leaderboard'), s => setLeaderboard(s.docs.map(d => d.data()).sort((a,b) => (b.level || 0) - (a.level || 0)).slice(0, 10))),
-      onSnapshot(publicPath('feed'), s => setGlobalFeed(s.docs.map(d => d.data()).sort((a,b) => b.ts - a.ts).slice(0, 10)))
-    ];
-    return () => unsubs.forEach(f => f());
-  }, [user]);
-
-  // 3. POMODORO SYSTEM
-  useEffect(() => {
-    let t;
-    if (isFocusing && timerSec > 0) {
-      t = setInterval(() => {
-        setTimerSec(s => s - 1);
-        if (timerSec % 60 === 0) setFocusXp(x => x + 5);
-      }, 1000);
-    } else if (timerSec === 0 && isFocusing) { finalizeFocus(); }
-    return () => clearInterval(t);
-  }, [isFocusing, timerSec]);
+  // --- Refs ---
+  const videoRef = useRef(null);
+  const timerRef = useRef(null);
+  const faceMeshRef = useRef(null);
+  const lastFocusState = useRef(true);
+  const audioCtxRef = useRef(null);
+  
+  // Using refs for logic checks to avoid stale closures in callbacks
+  const modeRef = useRef('work');
+  const isActiveRef = useRef(false);
 
   useEffect(() => {
-    const handleVis = () => {
-      if (document.hidden && isFocusing) {
-        setIsFocusing(false); setBacklash(true);
-        if (profile) updateDoc(doc(db, 'artifacts', APP_ID, 'users', user.uid, 'profile', 'data'), { hp: Math.max(0, (profile.hp || 100) - 10) });
+    modeRef.current = mode;
+    isActiveRef.current = isActive;
+  }, [mode, isActive]);
+
+  // --- Sound System ---
+  const playSound = (type) => {
+    try {
+      if (!audioCtxRef.current) audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)();
+      const ctx = audioCtxRef.current;
+      if (ctx.state === 'suspended') ctx.resume();
+
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+
+      if (type === 'end') {
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(880, ctx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(1320, ctx.currentTime + 0.1);
+        gain.gain.setValueAtTime(0.1, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.5);
+      } else {
+        // Only play warning sounds in Work Mode
+        if (modeRef.current !== 'work') return;
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(120, ctx.currentTime);
+        gain.gain.setValueAtTime(0.05, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3);
+      }
+      osc.start(); osc.stop(ctx.currentTime + 0.5);
+    } catch (e) {}
+  };
+
+  // --- App Switch Protection ---
+  useEffect(() => {
+    const handleVisibility = () => {
+      // Penalty only if ACTIVE and in WORK mode
+      if (document.hidden && isActiveRef.current && modeRef.current === 'work') {
+        setAppSwitches(s => s + 1);
+        playSound('alert');
       }
     };
-    document.addEventListener("visibilitychange", handleVis);
-    return () => document.removeEventListener("visibilitychange", handleVis);
-  }, [isFocusing, profile]);
+    document.addEventListener("visibilitychange", handleVisibility);
+    return () => document.removeEventListener("visibilitychange", handleVisibility);
+  }, []);
 
-  const finalizeFocus = async () => {
-    setIsFocusing(false);
-    const xp = focusXp + 60;
-    await grantReward(xp, 25, 'willpower');
-    triggerNotification(`Focus Complete! +${xp} XP`, "success");
-    setTimerSec(1500); setFocusXp(0);
-  };
+  // --- AI Gaze Detection ---
+  const onResults = useCallback((results) => {
+    const isWorkMode = modeRef.current === 'work';
+    const isCurrentlyActive = isActiveRef.current;
 
-  // 4. AI SCANNER & REWARDS
-  const handleAIVerify = async (file) => {
-    if (!file || !verifying) return;
-    setAiWorking(true);
-    triggerNotification("System analyzing solution artifacts...", "info");
+    if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
+      const landmarks = results.multiFaceLandmarks[0];
+      const nose = landmarks[1];
+      const leftEye = landmarks[33];
+      const rightEye = landmarks[263];
+      const horizontalOffset = Math.abs(nose.x - (leftEye.x + rightEye.x) / 2);
+      
+      // Focus check
+      const currentFocused = horizontalOffset < 0.08 && nose.y > 0.2 && nose.y < 0.8;
+      
+      if (currentFocused !== lastFocusState.current) {
+        setIsFocused(currentFocused);
+        // Penalty only if in WORK mode and timer is ACTIVE
+        if (!currentFocused && isCurrentlyActive && isWorkMode) {
+          setDistractions(d => d + 1);
+          playSound('alert');
+        }
+        lastFocusState.current = currentFocused;
+      }
+    } else if (lastFocusState.current) {
+      setIsFocused(false);
+      // Penalty for leaving frame
+      if (isCurrentlyActive && isWorkMode) {
+        setDistractions(d => d + 1);
+        playSound('alert');
+      }
+      lastFocusState.current = false;
+    }
+  }, []);
 
+  const initAi = async () => {
+    if (faceMeshRef.current) return true;
+    setIsAiLoading(true);
     try {
-      const reader = new FileReader();
-      reader.readAsDataURL(file);
-      reader.onload = async () => {
-        const base64 = reader.result.split(',')[1];
-        const title = verifying.mode === 'QUEST' ? verifying.obj.text : verifying.obj.title;
-        const prompt = `Quest: "${title}". Is this photo proof of completion? (e.g. solved DPP, notes, math). Respond JSON only: {"success": boolean, "reason": "str"}`;
-        
-        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${GEMINI_API_KEY}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ contents: [{ parts: [{ text: prompt }, { inlineData: { mimeType: "image/png", data: base64 } }] }], generationConfig: { responseMimeType: "application/json" } })
+      const load = (src) => new Promise(r => {
+        const s = document.createElement('script'); s.src = src; s.onload = r; document.head.appendChild(s);
+      });
+      await load("https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js");
+      await load("https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js");
+      
+      const fm = new window.FaceMesh({ locateFile: (f) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${f}` });
+      fm.setOptions({ maxNumFaces: 1, refineLandmarks: true, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+      fm.onResults(onResults);
+      faceMeshRef.current = fm;
+
+      const cam = new window.Camera(videoRef.current, { 
+        onFrame: async () => await fm.send({ image: videoRef.current }), 
+        width: 640, height: 480 
+      });
+      await cam.start();
+      setIsAiLoading(false);
+      setIsAiActive(true);
+      return true;
+    } catch (e) {
+      setIsAiLoading(false);
+      return false;
+    }
+  };
+
+  // --- Timer Engine ---
+  const toggle = async () => {
+    if (!audioCtxRef.current) audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtxRef.current.state === 'suspended') await audioCtxRef.current.resume();
+
+    if (!isActive) {
+      const ok = await initAi();
+      if (ok) {
+        try { if (document.documentElement.requestFullscreen) document.documentElement.requestFullscreen(); } catch(e) {}
+        setIsActive(true);
+      }
+    } else {
+      setIsActive(false);
+    }
+  };
+
+  useEffect(() => {
+    if (isActive && (isFocused || mode === 'shortBreak') && timeLeft > 0) {
+      timerRef.current = setInterval(() => setTimeLeft(t => t - 1), 1000);
+    } else {
+      clearInterval(timerRef.current);
+    }
+    if (timeLeft === 0 && isActive) complete();
+    return () => clearInterval(timerRef.current);
+  }, [isActive, isFocused, timeLeft, mode]);
+
+  const complete = async () => {
+    setIsActive(false);
+    playSound('end');
+    
+    // Save to Firestore ONLY if completing a WORK session
+    if (user && mode === 'work') {
+      try {
+        await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'sessions'), {
+          distractions,
+          appSwitches,
+          timestamp: Date.now(),
+          duration: settings.work,
+          mode: 'work'
         });
-        const data = await res.json();
-        const json = JSON.parse(data.candidates[0].content.parts[0].text);
+      } catch (e) { console.error("History save failed", e); }
+    }
 
-        if (json.success) {
-          const { obj, mode } = verifying;
-          const statBonus = (profile.playerClass && CLASSES[profile.playerClass].stat === obj.stat) ? 1.5 : 1.0;
-          await grantReward(Math.floor(obj.xp * statBonus), obj.gold, obj.stat);
-          if (mode === 'QUEST') await updateDoc(doc(db, 'artifacts', APP_ID, 'users', user.uid, 'quests', obj.id), { completed: true });
-          if (worldBoss) await dealBossDamage(obj.rank);
-          if (obj.rank === 'A' || obj.rank === 'S') setAriseObj(obj);
-          triggerNotification("Proof Accepted", "success");
-        } else { triggerNotification(json.reason, "error"); }
-        setAiWorking(false); setVerifying(null);
-      };
-    } catch (e) { setAiWorking(false); triggerNotification("AI Error", "error"); }
+    const next = mode === 'work' ? 'shortBreak' : 'work';
+    setMode(next);
+    setTimeLeft(settings[next] * 60);
+    setDistractions(0); 
+    setAppSwitches(0);
   };
 
-  const grantReward = async (xpG, goldG, sKey) => {
-    let { level, xp, maxXp, gold, stats, rank } = profile;
-    xp += xpG; gold += goldG; stats[sKey] = (stats[sKey] || 0) + 1;
-    while (xp >= maxXp) { xp -= maxXp; level += 1; maxXp = Math.floor(maxXp * 1.4); }
-    const newRank = RANKS[Math.min(Math.floor(level / 10), 5)];
-    const upd = { ...profile, level, xp, maxXp, gold, stats, rank: newRank };
-    await updateDoc(doc(db, 'artifacts', APP_ID, 'users', user.uid, 'profile', 'data'), upd);
-    await setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'leaderboard', user.uid), { uid: user.uid, name: profile.name, level, rank: newRank, playerClass: profile.playerClass, ts: Date.now() });
-  };
+  // --- Auth & Data Fetching ---
+  useEffect(() => {
+    const startAuth = async () => {
+      if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) await signInWithCustomToken(auth, __initial_auth_token);
+      else await signInAnonymously(auth);
+    };
+    startAuth();
+    onAuthStateChanged(auth, setUser);
+  }, []);
 
-  const dealBossDamage = async (rank) => {
-    const dmg = (RANKS.indexOf(rank) + 1) * 250;
-    await runTransaction(db, async t => {
-      const bRef = doc(db, 'artifacts', APP_ID, 'public', 'data', 'world_boss', 'active');
-      const bSnap = await t.get(bRef);
-      if (bSnap.exists()) t.update(bRef, { hp: Math.max(0, bSnap.data().hp - dmg) });
+  useEffect(() => {
+    if (!user) return;
+    const q = collection(db, 'artifacts', appId, 'users', user.uid, 'sessions');
+    return onSnapshot(q, (snap) => {
+      const logs = snap.docs.map(d => ({id: d.id, ...d.data()}));
+      setHistory(logs.sort((a,b) => b.timestamp - a.timestamp));
     });
-  };
+  }, [user]);
 
-  const triggerNotification = (msg, type) => {
-    setNotif({ msg, type });
-    setTimeout(() => setNotif(null), 4000);
-  };
-
-  if (bootState !== 'READY') return (
-    <div className="min-h-screen bg-black flex flex-col items-center justify-center p-8 space-y-4 font-mono text-blue-500">
-      <Cpu className="animate-spin" />
-      <span className="animate-pulse tracking-[0.5em] text-xs uppercase">Connecting to grid...</span>
-    </div>
-  );
-
-  if (!profile) return (
-    <div className="min-h-screen bg-black text-white flex flex-col items-center justify-center p-6 space-y-12">
-      <h1 className="text-6xl font-black italic text-blue-600 tracking-tighter">ARISE</h1>
-      <div className="w-full max-w-sm space-y-6 text-center">
-        <p className="text-slate-500 uppercase tracking-widest text-[10px]">Select Your Path</p>
-        <div className="grid grid-cols-2 gap-4">
-            {Object.entries(CLASSES).map(([k,v]) => (
-                <button key={k} onClick={()=>setActiveTab(k)} className={`p-6 rounded-2xl border-2 transition-all flex flex-col items-center gap-2 ${activeTab === k ? 'border-blue-500 bg-blue-500/10' : 'border-slate-800 bg-slate-900/40'}`}>
-                <div className={activeTab === k ? 'text-blue-500 scale-125' : 'text-slate-600'}>{v.icon}</div>
-                <span className="text-[10px] font-black uppercase tracking-widest">{v.name}</span>
-                </button>
-            ))}
-        </div>
-        <input id="hName" className="w-full bg-slate-900 border border-slate-800 p-6 rounded-2xl text-center outline-none focus:border-blue-500 font-mono" placeholder="HUNTER NAME" />
-        <button onClick={() => {
-          const n = document.getElementById('hName').value;
-          if (n) setDoc(doc(db, 'artifacts', APP_ID, 'users', user.uid, 'profile', 'data'), { name: n, playerClass: activeTab==='quests'?'WARRIOR':activeTab, level: 1, xp: 0, maxXp: 100, gold: 100, rank: "E", stats: { strength: 1, intelligence: 1, agility: 1, willpower: 1 }, hp: 100, isAdmin: false });
-        }} className="w-full bg-blue-600 py-5 rounded-2xl font-black uppercase tracking-widest shadow-2xl">Initialize</button>
-      </div>
-    </div>
-  );
+  const progress = (timeLeft / (settings[mode] * 60)) * 100;
 
   return (
-    <div className="min-h-screen bg-[#050505] text-slate-100 font-sans pb-32 overflow-x-hidden">
-      <input type="file" ref={fileRef} className="hidden" onChange={(e) => handleAIVerify(e.target.files[0])} />
+    <div className="relative min-h-screen w-full bg-black flex flex-col items-center justify-center text-white overflow-hidden font-sans">
+      
+      {/* Background Full View */}
+      <div className="absolute inset-0 z-0 bg-black">
+        <video ref={videoRef} autoPlay muted playsInline className={`h-full w-full object-cover transition-all duration-1000 grayscale ${isActive && (isFocused || mode === 'shortBreak') ? 'opacity-40 blur-none' : 'opacity-10 blur-3xl'}`} />
+        <div className="absolute inset-0 bg-gradient-to-b from-black/80 via-transparent to-black/80" />
+        <div className={`absolute inset-0 transition-all duration-500 pointer-events-none ${!isFocused && isActive && mode === 'work' ? 'bg-red-500/10 shadow-[inset_0_0_100px_rgba(255,0,0,0.2)]' : ''}`} />
+      </div>
 
-      {/* WORLD BOSS BAR */}
-      {worldBoss && worldBoss.hp > 0 && (
-        <div className="bg-red-950/20 border-b border-red-500/20 p-4 sticky top-0 z-[100] backdrop-blur-lg">
-           <div className="max-w-4xl mx-auto flex items-center gap-6">
-              <Flame className="text-red-500 animate-pulse" size={28} />
-              <div className="flex-1 space-y-1">
-                 <div className="flex justify-between text-[11px] font-black uppercase text-red-500 tracking-widest"><span>{worldBoss.name}</span><span>{worldBoss.hp.toLocaleString()} HP</span></div>
-                 <div className="h-1.5 bg-black rounded-full overflow-hidden border border-red-900/30 shadow-inner">
-                    <div className="h-full bg-red-600 transition-all duration-1000" style={{ width: `${(worldBoss.hp/worldBoss.maxHp)*100}%` }} />
-                 </div>
-              </div>
-           </div>
+      {/* Top HUD */}
+      <header className="absolute top-0 left-0 right-0 p-6 flex justify-between items-center z-50">
+        <div className="flex flex-col gap-1">
+          <div className="flex items-center gap-3">
+            <div className={`w-1.5 h-1.5 rounded-full ${isAiActive ? 'bg-[#00ff88] shadow-[0_0_10px_#00ff88]' : 'bg-white/20'}`} />
+            <span className="text-[10px] font-black tracking-[0.4em] uppercase opacity-40">Neural Sync</span>
+          </div>
+          <div className="text-[8px] font-bold text-neutral-600 uppercase tracking-widest">
+            {mode === 'work' ? 'Tracking Active' : 'Resting: All actions allowed'}
+          </div>
         </div>
-      )}
+        <div className="flex gap-2">
+          <button onClick={() => setShowHistory(true)} className="p-3 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 transition-all backdrop-blur-md"><History size={18} /></button>
+          <button onClick={() => setShowEditor(true)} className="p-3 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 transition-all backdrop-blur-md"><Settings size={18} /></button>
+        </div>
+      </header>
 
-      <div className="max-w-4xl mx-auto px-4 pt-8 space-y-8">
+      {/* Main Timer Display */}
+      <main className="relative z-10 flex flex-col items-center w-full max-w-sm px-8">
         
-        {/* HUD */}
-        <header className="bg-slate-900/30 backdrop-blur-xl border border-slate-800/60 rounded-[3rem] p-8 flex flex-col md:flex-row gap-10 items-center shadow-2xl relative overflow-hidden">
-          <div className="flex items-center gap-8 flex-1">
-            <div className="relative">
-              <div className="w-24 h-24 rounded-[2rem] bg-slate-800 border-2 border-blue-500/40 flex items-center justify-center shadow-xl">
-                <User size={48} className="text-blue-500" />
-                {profile.isAdmin && <ShieldCheck className="absolute -top-2 -left-2 text-red-500" size={20} />}
-              </div>
-              <span className="absolute -bottom-2 -right-2 px-3 py-1 rounded-xl border bg-black text-[10px] font-black">{profile.rank}-RANK</span>
-            </div>
-            <div>
-              <h2 className="text-3xl font-black italic text-white uppercase tracking-tighter">{profile.name}</h2>
-              <div className="flex items-center gap-4 text-[10px] font-bold text-slate-500 uppercase tracking-widest mt-1">
-                <span className="text-blue-400">{profile.playerClass} HUNTER</span>
-                <span>• LVL {profile.level}</span>
-                <span className="text-yellow-500">{profile.gold}G</span>
-              </div>
-            </div>
-          </div>
-          <div className="w-full md:w-80 space-y-6">
-             <Bar label="Grid EXP" val={profile.xp} max={profile.maxXp} color="bg-blue-600 shadow-[0_0_15px_rgba(37,99,235,0.3)]" />
-             <div className="grid grid-cols-3 gap-2">
-                <StatBox label="HP" val={`${profile.hp || 100}%`} color="text-red-500" />
-                <StatBox label="Army" val={shadowArmy.length} color="text-indigo-400" />
-                <button onClick={()=>setShowAdmin(true)} className="bg-slate-900/50 p-2 rounded-2xl border border-slate-800 flex items-center justify-center text-slate-500 hover:text-white shadow-lg transition-all"><Settings size={18}/></button>
-             </div>
-          </div>
-        </header>
-
-        {/* POMODORO */}
-        <section className={`bg-slate-900/40 border-2 rounded-[2.5rem] p-10 flex flex-col md:flex-row items-center justify-between gap-10 transition-all ${isFocusing ? 'border-blue-500 shadow-[0_0_50px_rgba(59,130,246,0.1)]' : 'border-slate-800'}`}>
-           <div className="flex items-center gap-8 text-center md:text-left">
-              <div className={`p-6 rounded-3xl ${isFocusing ? 'bg-blue-600 text-white animate-spin-slow shadow-lg' : 'bg-slate-800 text-slate-600'}`}><Clock size={40}/></div>
-              <div>
-                 <h3 className="text-xs font-black text-blue-500 uppercase tracking-[0.4em] mb-1">Mana Meditation</h3>
-                 <p className="text-6xl font-black font-mono text-white tracking-tighter">{Math.floor(timerSec/60)}:{String(timerSec%60).padStart(2,'0')}</p>
-                 {isFocusing && <p className="text-[10px] text-blue-400 font-black uppercase mt-2 tracking-widest animate-pulse">Accruing XP Resonance...</p>}
-              </div>
-           </div>
-           <button onClick={()=>setIsFocusing(!isFocusing)} className={`px-16 py-5 rounded-[2rem] font-black uppercase text-xs tracking-widest shadow-2xl transition-all active:scale-95 ${isFocusing ? 'bg-red-500/10 border border-red-500 text-red-500' : 'bg-blue-600 text-white hover:bg-blue-500'}`}>
-             {isFocusing ? 'Abort Focus' : 'Commence Focus'}
-           </button>
-        </section>
-
-        {/* NAVIGATION */}
-        <div className="flex gap-2 p-1.5 bg-slate-900/30 border border-slate-800 rounded-3xl overflow-x-auto no-scrollbar shadow-inner">
-          {['quests', 'gates', 'ranking', 'shop', 'feed'].map(t => (
-            <button key={t} onClick={() => setActiveTab(t)} className={`flex-1 min-w-[120px] py-4 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all ${activeTab === t ? 'bg-blue-600 text-white shadow-lg' : 'text-slate-500 hover:text-white'}`}>
-              {t === 'gates' ? <Map size={12} className="inline mr-2" /> : ''}{t}
+        {/* Mode Switcher */}
+        <div className="flex bg-white/5 backdrop-blur-2xl rounded-full p-1 border border-white/5 mb-10">
+          {['work', 'shortBreak'].map(m => (
+            <button key={m} onClick={() => { setMode(m); setIsActive(false); setTimeLeft(settings[m]*60); }} className={`px-6 py-2 rounded-full text-[9px] font-black uppercase tracking-widest transition-all ${mode === m ? 'bg-white text-black' : 'text-white/40 hover:text-white'}`}>
+              {m === 'work' ? 'Focus' : 'Break'}
             </button>
           ))}
         </div>
 
-        {/* MAIN LISTS */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-10 items-start">
-          <aside className="lg:col-span-4 space-y-6">
-            <div className="bg-slate-900/40 border border-slate-800 rounded-[2.5rem] p-10 space-y-8 shadow-2xl">
-               <h3 className="text-xs font-black text-slate-500 uppercase tracking-widest flex items-center gap-3"><Brain size={20}/> Attribute Registry</h3>
-               {Object.entries(profile.stats || {}).map(([k, v]) => (
-                 <div key={k} className="flex justify-between items-center group">
-                   <span className={`text-[11px] uppercase flex items-center gap-3 ${CLASSES[profile.playerClass]?.stat === k ? 'text-blue-400 font-black' : 'text-slate-500'}`}>
-                     {STAT_ICONS[k] || <Zap size={14}/>} {k}
-                   </span>
-                   <span className="text-3xl font-black font-mono text-white group-hover:text-blue-500 transition-colors">{v}</span>
-                 </div>
-               ))}
-            </div>
-          </aside>
-
-          <main className="lg:col-span-8 space-y-6">
-            {activeTab === 'quests' && (
-              <div className="space-y-6">
-                <div className="flex justify-between px-4 items-center uppercase text-xs font-black text-blue-500 tracking-[0.3em]">Operational Log<button onClick={()=>setShowAdd(true)} className="bg-blue-600 p-2.5 rounded-2xl text-white shadow-xl hover:scale-105 transition-all"><Plus size={24}/></button></div>
-                {quests.filter(q => !q.completed).map(q => (
-                  <QuestCard key={q.id} quest={q} onAction={() => { setVerifying({ obj: q, mode: 'QUEST' }); fileRef.current.click(); }} />
-                ))}
-                {quests.filter(q=>!q.completed).length === 0 && <div className="py-24 text-center border-2 border-dashed border-slate-800/40 rounded-[3rem] text-slate-700 uppercase font-black text-xs italic">No Active Grid Missions.</div>}
-              </div>
-            )}
-
-            {activeTab === 'gates' && (
-              <div className="space-y-6">
-                 <h3 className="text-xs font-black text-emerald-500 uppercase tracking-[0.4em] px-4">Global Gates (DPPs)</h3>
-                 {gates.map(g => (
-                   <div key={g.id} className="bg-slate-900 border-2 border-emerald-900/30 p-8 rounded-[3rem] space-y-6 relative overflow-hidden group hover:border-emerald-500 transition-all shadow-2xl">
-                      <div className="absolute top-0 right-0 p-8 opacity-5 group-hover:scale-110 transition-transform"><BookOpen size={100}/></div>
-                      <div className="space-y-1">
-                         <span className="text-[10px] font-black text-emerald-500 uppercase tracking-[0.2em]">{g.rank}-RANK GATE OPEN</span>
-                         <h4 className="text-3xl font-black italic tracking-tighter text-white uppercase leading-tight">{g.title}</h4>
-                         <p className="text-slate-500 text-xs italic font-bold leading-relaxed">{g.description}</p>
-                      </div>
-                      <div className="flex gap-4">
-                         <a href={g.url} target="_blank" className="flex-1 bg-white text-black py-4 rounded-2xl font-black text-xs uppercase flex items-center justify-center gap-2 hover:scale-[1.02] transition-all"><Download size={18}/> Enter Gate</a>
-                         <button onClick={()=>{ setVerifying({ obj: g, mode: 'GATE' }); fileRef.current.click(); }} className="flex-1 bg-emerald-600 text-white py-4 rounded-2xl font-black text-xs uppercase flex items-center justify-center gap-2 shadow-xl hover:bg-emerald-500 transition-all"><Camera size={18}/> Verify Solution</button>
-                      </div>
-                   </div>
-                 ))}
-                 {gates.length === 0 && <div className="py-24 text-center border-2 border-dashed border-slate-800/40 rounded-[3rem] text-slate-700 font-black uppercase text-xs italic">Grid Gates Inactive.</div>}
-              </div>
-            )}
-
-            {activeTab === 'ranking' && (
-              <div className="bg-slate-900/30 border border-slate-800 rounded-[3rem] overflow-hidden shadow-2xl">
-                 {leaderboard.map((h, i) => (
-                  <div key={i} className={`flex items-center justify-between p-10 border-b border-slate-800/30 last:border-0 ${h.uid === user.uid ? 'bg-blue-600/5 shadow-inner' : 'hover:bg-white/5'}`}>
-                    <div className="flex items-center gap-10"><span className={`text-2xl font-black italic ${i < 3 ? 'text-blue-500' : 'text-slate-700'}`}>#{i+1}</span><div><p className="text-xl font-black uppercase tracking-tight text-white leading-none">{h.name}</p><span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mt-2 block">{h.playerClass} RANK {h.rank}</span></div></div>
-                    <div className="text-right text-4xl font-black font-mono text-white tracking-tighter">{h.level}</div>
-                  </div>
-                ))}
-              </div>
-            )}
-            
-            {activeTab === 'feed' && (
-               <div className="space-y-4 px-4 max-h-[600px] overflow-y-auto custom-scrollbar">
-                  {globalFeed.map((f, i) => (
-                    <div key={i} className="bg-slate-900/40 p-6 rounded-3xl border border-slate-800 animate-in fade-in slide-in-from-left-4">
-                       <p className="text-sm font-bold text-slate-200 leading-relaxed italic">{f.message}</p>
-                       <p className="text-[9px] font-black text-slate-600 uppercase mt-2 tracking-widest">{new Date(f.ts).toLocaleTimeString()}</p>
-                    </div>
-                  ))}
-               </div>
-            )}
-          </main>
-        </div>
-      </div>
-
-      {/* OVERLAYS */}
-      {aiWorking && (
-        <div className="fixed inset-0 z-[500] bg-black/98 backdrop-blur-3xl flex flex-col items-center justify-center space-y-10">
-           <Loader2 className="text-blue-500 animate-spin" size={100} />
-           <p className="text-3xl font-black italic text-blue-400 tracking-tighter uppercase animate-pulse">Scanning Visual Proof...</p>
-        </div>
-      )}
-
-      {ariseObj && (
-        <div className="fixed inset-0 z-[600] bg-black/99 flex flex-col items-center justify-center space-y-16 p-12 animate-in zoom-in-95 duration-1000">
-           <Ghost className="text-indigo-500 animate-pulse" size={300} />
-           <h2 className="text-8xl font-black italic text-white tracking-tighter text-center uppercase underline decoration-indigo-600 decoration-8 underline-offset-8">ARISE</h2>
-           <button onClick={async () => {
-             const name = ["Igris", "Tank", "Beru", "Kaisel", "Iron"][Math.floor(Math.random()*5)] + " Shadow";
-             await addDoc(collection(db, 'artifacts', APP_ID, 'users', user.uid, 'shadows'), { name, stat: ariseObj.stat, ts: Date.now() });
-             setAriseObj(null);
-             triggerNotif(`ARISE: ${name} added to army.`, "success");
-           }} className="px-32 py-10 bg-indigo-600 text-white font-black text-6xl italic tracking-tighter rounded-full shadow-[0_0_120px_rgba(79,70,229,0.8)] active:scale-95 transition-all">ARISE.</button>
-           <button onClick={() => setAriseObj(null)} className="text-slate-600 uppercase font-black text-xs tracking-[1em] hover:text-white transition-colors">Ignore</button>
-        </div>
-      )}
-
-      {showAdd && (
-        <Modal title="Deploy System Quest" onClose={() => setShowAdd(false)}>
-           <form onSubmit={async (e) => {
-             e.preventDefault();
-             const fd = new FormData(e.target);
-             await addDoc(collection(db, 'artifacts', APP_ID, 'users', user.uid, 'quests'), {
-               text: fd.get('text'), rank: fd.get('rank'), stat: fd.get('stat'), xp: 150, gold: 30, completed: false, createdAt: Date.now()
-             });
-             setShowAdd(false);
-           }} className="space-y-8">
-              <input name="text" placeholder="QUEST OBJECTIVE..." className="w-full bg-slate-900 border border-slate-800 p-8 rounded-[2rem] outline-none text-xl font-mono focus:border-blue-500 shadow-inner" required />
-              <div className="grid grid-cols-2 gap-6">
-                <select name="rank" className="bg-slate-900 p-6 rounded-2xl border border-slate-800 font-black text-xs uppercase outline-none shadow-inner">{RANKS.map(r => <option key={r} value={r}>{r}</option>)}</select>
-                <select name="stat" className="bg-slate-900 p-6 rounded-2xl border border-slate-800 font-black text-xs uppercase outline-none shadow-inner">{Object.keys(profile.stats || {}).map(s => <option key={s} value={s}>{s}</option>)}</select>
-              </div>
-              <button className="w-full bg-blue-600 p-8 rounded-[2.5rem] font-black uppercase text-sm tracking-[0.5em] shadow-2xl active:scale-95 transition-all">Publish Mission</button>
-           </form>
-        </Modal>
-      )}
-
-      {showAdmin && (
-        <Modal title="Administrator Console" onClose={() => setShowAdmin(false)}>
-          <div className="space-y-12">
-             {!profile.isAdmin ? (
-               <div className="space-y-8 text-center">
-                  <p className="text-xs font-black text-red-500 uppercase tracking-[0.3em]">Restricted Territory. Identity Verification Required.</p>
-                  <input type="password" value={adminKey} onChange={e => setAdminKey(e.target.value)} className="w-full bg-slate-900 border border-slate-800 p-6 rounded-3xl outline-none text-center font-mono text-xl" placeholder="SYSTEM_KEY" />
-                  <button onClick={() => { if(adminKey === "SYSTEM_ADMIN_2025") updateDoc(doc(db, 'artifacts', APP_ID, 'users', user.uid, 'profile', 'data'), { isAdmin: true }); }} className="w-full bg-red-600 p-6 rounded-3xl font-black uppercase text-xs tracking-widest shadow-xl active:scale-95 transition-all">Unlock Overide</button>
-               </div>
-             ) : (
-               <div className="space-y-12 max-h-[500px] overflow-y-auto pr-2 custom-scrollbar">
-                  <div className="space-y-6">
-                     <h4 className="text-[11px] font-black text-emerald-500 uppercase flex items-center gap-3 font-mono tracking-widest"><Map size={24}/> Deploy Global Gate (DPP)</h4>
-                     <form onSubmit={async (e) => { 
-                       e.preventDefault(); 
-                       const fd = new FormData(e.target);
-                       await addDoc(collection(db, 'artifacts', APP_ID, 'public', 'data', 'dpps'), {
-                         title: fd.get('t'), url: fd.get('u'), description: fd.get('d'), rank: fd.get('r'), stat: fd.get('s'), xp: parseInt(fd.get('xp')), gold: parseInt(fd.get('g')), ts: Date.now()
-                       });
-                       triggerNotif("Global Gate Deployed", "success");
-                     }} className="space-y-3">
-                        <input name="t" placeholder="DPP TITLE..." className="w-full bg-slate-900 p-5 rounded-2xl border border-slate-800 text-sm font-bold" required />
-                        <input name="u" placeholder="PDF/DRIVE URL..." className="w-full bg-slate-900 p-5 rounded-2xl border border-slate-800 text-sm font-mono" required />
-                        <textarea name="d" placeholder="Description..." className="w-full bg-slate-900 p-5 rounded-2xl border border-slate-800 text-xs h-24" />
-                        <div className="grid grid-cols-2 gap-3">
-                           <input name="xp" type="number" placeholder="XP" className="bg-slate-900 p-4 rounded-xl border border-slate-800 text-xs" required />
-                           <input name="g" type="number" placeholder="GOLD" className="bg-slate-900 p-4 rounded-xl border border-slate-800 text-xs" required />
-                        </div>
-                        <button className="w-full bg-emerald-600 py-5 rounded-3xl text-[11px] font-black uppercase tracking-[0.4em] shadow-xl">Broadcast Global Gate</button>
-                     </form>
-                  </div>
-                  <div className="space-y-6">
-                     <h4 className="text-[11px] font-black text-red-500 uppercase flex items-center gap-3 font-mono tracking-widest"><Flame size={24}/> Spawn Raid Boss</h4>
-                     <form onSubmit={e => { e.preventDefault(); setDoc(doc(db, 'artifacts', APP_ID, 'public', 'data', 'world_boss', 'active'), { name: e.target.n.value, hp: parseInt(e.target.h.value), maxHp: parseInt(e.target.h.value), active: true }); triggerNotif("Boss Manifested", "success"); }} className="grid grid-cols-2 gap-4">
-                        <input name="n" placeholder="NAME..." className="bg-slate-900 p-5 rounded-xl border border-slate-800 text-sm" />
-                        <input name="h" placeholder="HP..." type="number" className="bg-slate-900 p-5 rounded-xl border border-slate-800 text-sm" />
-                        <button className="col-span-2 bg-red-600 py-5 rounded-3xl text-[11px] font-black uppercase tracking-[0.3em] shadow-xl">Deploy World Raid</button>
-                     </form>
-                  </div>
-               </div>
-             )}
+        {/* Circular Clock */}
+        <div className="relative flex items-center justify-center mb-10">
+          <svg width="240" height="240" className="-rotate-90">
+            <circle cx="120" cy="120" r="105" fill="none" stroke="rgba(255,255,255,0.03)" strokeWidth="3" />
+            <circle cx="120" cy="120" r="105" fill="none" stroke={!isFocused && isActive && mode === 'work' ? '#ff4d4d' : '#00ff88'} strokeWidth="3" strokeDasharray="660" strokeDashoffset={660 - (progress / 100) * 660} strokeLinecap="round" className="transition-all duration-1000 ease-linear" />
+          </svg>
+          <div className="absolute text-center">
+            <h1 className={`text-7xl md:text-8xl font-black tracking-tighter tabular-nums leading-none transition-all ${!isFocused && isActive && mode === 'work' ? 'text-red-500 blur-sm' : 'text-white'}`}>
+              {Math.floor(timeLeft/60).toString().padStart(2,'0')}:{(timeLeft%60).toString().padStart(2,'0')}
+            </h1>
           </div>
-        </Modal>
-      )}
+        </div>
 
-      {backlash && (
-        <div className="fixed inset-0 z-[1000] bg-red-950/98 backdrop-blur-[60px] flex flex-col items-center justify-center p-12 text-center animate-in fade-in duration-500">
-           <AlertTriangle size={150} className="text-red-500 animate-bounce mb-12" />
-           <h2 className="text-8xl font-black text-white italic uppercase tracking-tighter mb-6 underline decoration-red-600 decoration-[12px] underline-offset-[16px] leading-none">Mana Backlash</h2>
-           <p className="text-slate-200 max-w-xl font-mono text-xl leading-relaxed mb-16 tracking-widest uppercase italic font-bold">System detected interference. Mana stability lost. HP penalty applied to spirit core.</p>
-           <button onClick={() => setBacklash(false)} className="bg-white text-black px-24 py-8 rounded-[3rem] font-black uppercase text-2xl shadow-[0_0_80px_rgba(255,255,255,0.4)] hover:scale-105 transition-all active:scale-95">Acknowledge</button>
+        {/* Real-time Stats */}
+        <div className="grid grid-cols-2 gap-3 w-full mb-10">
+          <div className="bg-white/5 border border-white/10 p-4 rounded-2xl text-center backdrop-blur-md">
+            <div className="flex items-center justify-center gap-2 text-[8px] font-bold text-white/30 uppercase tracking-widest mb-1"><Eye size={10}/> Gaze</div>
+            <div className={`text-xl font-bold ${distractions > 0 && mode === 'work' ? 'text-red-500' : 'text-white/20'}`}>{mode === 'work' ? distractions : '--'}</div>
+          </div>
+          <div className="bg-white/5 border border-white/10 p-4 rounded-2xl text-center backdrop-blur-md">
+            <div className="flex items-center justify-center gap-2 text-[8px] font-bold text-white/30 uppercase tracking-widest mb-1"><Smartphone size={10}/> App Exit</div>
+            <div className={`text-xl font-bold ${appSwitches > 0 && mode === 'work' ? 'text-orange-500' : 'text-white/20'}`}>{mode === 'work' ? appSwitches : '--'}</div>
+          </div>
+        </div>
+
+        {/* Action Buttons */}
+        <div className="flex items-center gap-6">
+          <button onClick={toggle} disabled={isAiLoading} className={`h-20 w-20 rounded-full flex items-center justify-center transition-all active:scale-95 ${isActive ? 'bg-white/10 text-white border border-white/20' : 'bg-white text-black shadow-xl hover:scale-105'}`}>
+            {isAiLoading ? <Loader2 size={24} className="animate-spin" /> : isActive ? <Pause size={32} fill="currentColor" /> : <Play size={32} fill="currentColor" className="ml-1" />}
+          </button>
+          <button onClick={() => { setTimeLeft(settings[mode]*60); setIsActive(false); setDistractions(0); setAppSwitches(0); }} className="h-14 w-14 rounded-full bg-white/5 border border-white/5 flex items-center justify-center text-white/30 hover:text-white transition-all"><RotateCcw size={20}/></button>
+        </div>
+      </main>
+
+      {/* Editor Modal */}
+      {showEditor && (
+        <div className="fixed inset-0 z-[100] bg-black/95 backdrop-blur-2xl flex items-center justify-center p-6 text-left">
+          <div className="bg-neutral-900 w-full max-w-sm rounded-[2rem] p-8 border border-white/5 relative">
+            <button onClick={() => setShowEditor(false)} className="absolute top-8 right-8 text-white/20 hover:text-white"><X /></button>
+            <h2 className="text-xl font-black italic tracking-tighter mb-8">Parameters</h2>
+            <div className="space-y-8">
+              {[{l:'Focus Work', k:'work', i:<Zap size={12}/>}, {l:'Short Break', k:'shortBreak', i:<Coffee size={12}/>}].map(i => (
+                <div key={i.k} className="space-y-3">
+                  <div className="flex justify-between text-[10px] font-bold uppercase tracking-widest text-white/40">
+                    <span className="flex items-center gap-2">{i.i} {i.l}</span>
+                    <span className="text-white">{settings[i.k]}m</span>
+                  </div>
+                  <input type="range" min="1" max="90" value={settings[i.k]} onChange={e => {
+                    const v = parseInt(e.target.value);
+                    setSettings(s => ({...s, [i.k]: v}));
+                    if(mode === i.k) setTimeLeft(v*60);
+                  }} className="w-full accent-[#00ff88] h-1 bg-white/10 rounded-full appearance-none" />
+                </div>
+              ))}
+              <button onClick={() => setShowEditor(false)} className="w-full bg-white text-black py-4 rounded-xl font-bold text-[10px] uppercase tracking-widest mt-4">Save Config</button>
+            </div>
+          </div>
         </div>
       )}
 
-      {notif && (
-        <div className={`fixed bottom-10 left-1/2 -translate-x-1/2 z-[1100] px-14 py-6 rounded-full border-2 shadow-[0_0_100px_rgba(0,0,0,1)] animate-bounce flex items-center gap-6 ${notif.type === 'error' ? 'bg-red-500/10 border-red-500 text-red-500 shadow-red-900/40' : 'bg-blue-600/10 border-blue-500 text-blue-400 shadow-blue-900/40'}`}>
-          <span className="text-3xl font-black">{notif.type==='error'?'!':'✓'}</span>
-          <span className="text-xs font-black uppercase tracking-[0.4em] italic leading-none">{notif.msg}</span>
+      {/* Archive Modal */}
+      {showHistory && (
+        <div className="fixed inset-0 z-[100] bg-black p-8 overflow-y-auto">
+          <div className="max-w-md mx-auto">
+            <div className="flex justify-between items-center mb-16">
+              <h2 className="text-4xl font-black italic tracking-tighter">Neural Archive</h2>
+              <button onClick={() => setShowHistory(false)} className="p-3 bg-white/5 rounded-full"><X /></button>
+            </div>
+            <div className="space-y-4">
+              {history.length === 0 ? <p className="text-center text-white/20 py-20 font-bold uppercase text-[10px]">No logs detected</p> : history.map((s, idx) => (
+                <div key={idx} className="bg-white/5 border border-white/5 p-6 rounded-3xl flex justify-between items-center">
+                  <div className="text-left">
+                    <div className="text-[8px] font-bold text-white/30 uppercase mb-1">{new Date(s.timestamp).toLocaleDateString()} at {new Date(s.timestamp).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</div>
+                    <div className="font-bold text-sm">Focus Block Complete</div>
+                    <div className="text-[10px] text-[#00ff88] font-bold">{s.duration} minutes</div>
+                  </div>
+                  <div className="flex gap-4">
+                    <div className="text-center">
+                      <span className="text-[8px] text-white/30 uppercase block">Gaze</span>
+                      <span className="text-xs font-bold text-red-500">{s.distractions}</span>
+                    </div>
+                    <div className="text-center">
+                      <span className="text-[8px] text-white/30 uppercase block">Exit</span>
+                      <span className="text-xs font-bold text-orange-500">{s.appSwitches || 0}</span>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
       )}
+
+      <style dangerouslySetInnerHTML={{ __html: `
+        input[type='range']::-webkit-slider-thumb { -webkit-appearance: none; height: 16px; width: 16px; border-radius: 50%; background: white; cursor: pointer; border: 3px solid black; }
+        .tabular-nums { font-variant-numeric: tabular-nums; }
+        ::-webkit-scrollbar { width: 4px; }
+        ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 10px; }
+      `}} />
+
     </div>
   );
 }
 
-// --- SUB-COMPONENTS ---
-const Bar = ({ label, val, max, color }) => (
-  <div className="w-full">
-    <div className="flex justify-between text-[11px] font-black mb-2 opacity-80 uppercase tracking-[0.4em] px-2 font-mono leading-none text-slate-500"><span>{label}</span><span>{val}/{max}</span></div>
-    <div className="h-3 bg-black rounded-full border border-white/5 overflow-hidden shadow-inner p-0.5">
-      <div className={`h-full ${color} transition-all duration-1000 rounded-full shadow-[0_0_20px_rgba(255,255,255,0.1)]`} style={{ width: `${Math.min((val/max)*100, 100)}%` }} />
-    </div>
-  </div>
-);
-
-const StatBox = ({ label, val, color }) => (
-  <div className="bg-slate-900/50 p-4 rounded-3xl border border-slate-800 text-center flex-1 shadow-2xl">
-    <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1 leading-none">{label}</p>
-    <p className={`text-lg font-black ${color} tracking-tighter uppercase leading-none`}>{val}</p>
-  </div>
-);
-
-const StatWidget = ({ label, val, color }) => (
-  <div className="bg-slate-900/50 p-4 rounded-3xl border border-slate-800 text-center flex-1 shadow-2xl">
-    <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1 leading-none">{label}</p>
-    <p className={`text-lg font-black ${color} tracking-tighter uppercase leading-none`}>{val}</p>
-  </div>
-);
-
-const QuestCard = ({ quest, onAction }) => (
-  <div className="bg-slate-900/50 border border-slate-800/80 p-8 rounded-[3.5rem] flex items-center justify-between group hover:border-blue-500/50 transition-all shadow-2xl relative overflow-hidden">
-    <div className="flex items-center gap-10 relative z-10">
-      <div className={`w-16 h-16 rounded-3xl bg-slate-900 flex items-center justify-center font-black text-xl border-2 border-blue-900/50 text-blue-500 shadow-xl uppercase`}>{quest.rank}</div>
-      <div>
-        <h4 className="font-bold text-2xl text-slate-100 tracking-tight leading-none uppercase font-serif">{quest.text}</h4>
-        <div className="flex gap-10 text-[11px] font-black uppercase text-slate-500 mt-3 tracking-[0.2em]">
-          <span className="text-blue-400">+{quest.xp} XP</span>
-          <span className="text-yellow-500">+{quest.gold}G</span>
-          <span className="opacity-60 capitalize font-mono">{quest.stat}</span>
-        </div>
-      </div>
-    </div>
-    <button onClick={onAction} className="p-6 bg-blue-500/10 text-blue-500 rounded-[2.5rem] hover:bg-blue-600 hover:text-white transition-all shadow-2xl active:scale-90 relative z-10"><Camera size={40}/></button>
-  </div>
-);
-
-const Modal = ({ title, children, onClose }) => (
-  <div className="fixed inset-0 z-[200] flex items-center justify-center p-8 bg-black/99 backdrop-blur-[40px] animate-in fade-in duration-300">
-    <div className="w-full max-w-2xl bg-[#0a0a0a] border border-slate-800 rounded-[4.5rem] overflow-hidden shadow-[0_0_200px_rgba(0,0,0,1)] animate-in zoom-in-95">
-      <div className="p-12 border-b border-slate-900 flex justify-between items-center bg-slate-900/30"><h3 className="font-black uppercase tracking-[0.6em] text-[11px] text-slate-500 font-mono leading-none">{title}</h3><button onClick={onClose} className="text-slate-600 hover:text-white transition-all hover:rotate-90"><X size={48}/></button></div>
-      <div className="p-14">{children}</div>
-    </div>
-  </div>
-);
-
-const RANK_THEME = (r) => {
-  if (r === 'S') return 'border-red-600 text-red-500 bg-red-600/10';
-  if (r === 'A') return 'border-orange-500 text-orange-500 bg-orange-500/5';
-  if (r === 'B') return 'border-purple-900/30 text-purple-500 bg-purple-500/5';
-  return 'border-slate-800 text-slate-500 bg-slate-900/50';
-};
-
+        
