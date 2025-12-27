@@ -1,159 +1,131 @@
 
-
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { 
   Play, Pause, RotateCcw, Settings, History, 
-  X, Zap, Coffee, Shield, EyeOff, 
-  Smartphone, Volume2, Target, Flame, Calendar, Loader2,
-  Battery, Wifi, WifiOff, AlertTriangle
+  X, Zap, Coffee, Shield, AlertCircle, Loader2, Eye, EyeOff, Smartphone
 } from 'lucide-react';
-import { initializeApp, getApps } from 'firebase/app';
-import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, collection, addDoc, onSnapshot, query, limit } from 'firebase/firestore';
 
-// --- YOUR INTEGRATED FIREBASE CONFIG ---
-const firebaseConfig = {
-  apiKey: "AIzaSyDivV4vQYujhG6lBQkAGxgvmF2JJOwUYGY",
-  authDomain: "productivety-app.firebaseapp.com",
-  projectId: "productivety-app",
-  storageBucket: "productivety-app.firebasestorage.app",
-  messagingSenderId: "676233842288",
-  appId: "1:676233842288:web:b356d5eff17c68379c6eb5",
-  measurementId: "G-W3LCRZP9K1"
-};
-
-// Global Initialization
-const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
+// --- Firebase Configuration ---
+const firebaseConfig = JSON.parse(__firebase_config);
+const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
-const APP_ID = "aura-pro-ultimate-v16";
-
-// Styles Injector for Vercel
-const injectTailwind = () => {
-  if (!document.getElementById('tailwind-cdn')) {
-    const script = document.createElement('script');
-    script.id = 'tailwind-cdn';
-    script.src = 'https://cdn.tailwindcss.com';
-    document.head.appendChild(script);
-  }
-};
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'aura-focus-v7';
 
 export default function App() {
-  const [error, setError] = useState(null);
-  
-  // Try to inject styles immediately
-  useEffect(() => {
-    try { injectTailwind(); } catch (e) { setError("Style injection failed"); }
-  }, []);
-
   // --- Core State ---
-  const [settings, setSettings] = useState({ work: 25, shortBreak: 5, objective: "Deep Work Protocol" });
-  const [mode, setMode] = useState('work'); 
+  const [settings, setSettings] = useState({ work: 25, shortBreak: 5 });
+  const [mode, setMode] = useState('work'); // 'work' | 'shortBreak'
   const [timeLeft, setTimeLeft] = useState(25 * 60);
   const [isActive, setIsActive] = useState(false);
   const [user, setUser] = useState(null);
-  const [ambientType, setAmbientType] = useState('off'); 
+  
+  // --- Tracking State ---
   const [isFocused, setIsFocused] = useState(true);
   const [distractions, setDistractions] = useState(0);
   const [appSwitches, setAppSwitches] = useState(0);
   const [isAiLoading, setIsAiLoading] = useState(false);
+  const [isAiActive, setIsAiActive] = useState(false);
+
+  // --- UI State ---
   const [showEditor, setShowEditor] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [history, setHistory] = useState([]);
-  const [battery, setBattery] = useState({ level: 100, charging: true });
-  const [isOnline, setIsOnline] = useState(navigator.onLine);
 
-  // --- Logic Refs ---
+  // --- Refs ---
   const videoRef = useRef(null);
   const timerRef = useRef(null);
   const faceMeshRef = useRef(null);
+  const lastFocusState = useRef(true);
   const audioCtxRef = useRef(null);
-  const ambientNodes = useRef({ carrier: null, modulator: null });
-  const isFocusedRef = useRef(true); 
-  const statsRef = useRef({ distractions: 0, appSwitches: 0 });
-  const sessionRef = useRef({ mode: 'work', isActive: false });
+  
+  // Using refs for logic checks to avoid stale closures in callbacks
+  const modeRef = useRef('work');
+  const isActiveRef = useRef(false);
 
   useEffect(() => {
-    sessionRef.current = { mode, isActive };
+    modeRef.current = mode;
+    isActiveRef.current = isActive;
   }, [mode, isActive]);
 
-  // --- Audio Engine ---
-  const stopAmbient = () => {
-    if (ambientNodes.current.carrier) { try { ambientNodes.current.carrier.stop(); ambientNodes.current.carrier.disconnect(); } catch(e) {} }
-    if (ambientNodes.current.modulator) { try { ambientNodes.current.modulator.stop(); ambientNodes.current.modulator.disconnect(); } catch(e) {} }
-    ambientNodes.current = { carrier: null, modulator: null };
-  };
-
-  const startAmbient = async (type) => {
-    if (type === 'off') { stopAmbient(); return; }
+  // --- Sound System ---
+  const playSound = (type) => {
     try {
       if (!audioCtxRef.current) audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)();
       const ctx = audioCtxRef.current;
-      if (ctx.state === 'suspended') await ctx.resume();
-      stopAmbient();
-      const mainGain = ctx.createGain();
-      mainGain.gain.setValueAtTime(0.06, ctx.currentTime);
-      mainGain.connect(ctx.destination);
+      if (ctx.state === 'suspended') ctx.resume();
 
-      if (type === 'rain') {
-        const bufferSize = 2 * ctx.sampleRate;
-        const noiseBuffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
-        const output = noiseBuffer.getChannelData(0);
-        for (let i = 0; i < bufferSize; i++) output[i] = Math.random() * 2 - 1;
-        const whiteNoise = ctx.createBufferSource();
-        whiteNoise.buffer = noiseBuffer; whiteNoise.loop = true;
-        const filter = ctx.createBiquadFilter(); filter.type = 'lowpass'; filter.frequency.setValueAtTime(400, ctx.currentTime);
-        whiteNoise.connect(filter); filter.connect(mainGain); whiteNoise.start(); ambientNodes.current.carrier = whiteNoise;
-      } else {
-        const carrier = ctx.createOscillator(); carrier.frequency.setValueAtTime(220, ctx.currentTime);
-        const modulator = ctx.createOscillator();
-        const targetFreq = type === 'alpha' ? 10 : type === 'theta' ? 6 : 40;
-        modulator.frequency.setValueAtTime(targetFreq, ctx.currentTime);
-        const amGain = ctx.createGain(); amGain.gain.setValueAtTime(0.5, ctx.currentTime);
-        modulator.connect(amGain); amGain.connect(mainGain.gain); carrier.connect(mainGain);
-        carrier.start(); modulator.start(); ambientNodes.current = { carrier, modulator };
-      }
-    } catch (e) { console.error(e); }
-  };
-
-  const playEffect = (type) => {
-    try {
-      if (!audioCtxRef.current) return;
-      const ctx = audioCtxRef.current;
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
-      osc.connect(gain); gain.connect(ctx.destination);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+
       if (type === 'end') {
+        osc.type = 'sine';
         osc.frequency.setValueAtTime(880, ctx.currentTime);
         osc.frequency.exponentialRampToValueAtTime(1320, ctx.currentTime + 0.1);
-        gain.gain.setValueAtTime(0.2, ctx.currentTime);
-      } else {
-        if (sessionRef.current.mode !== 'work') return;
-        osc.type = 'sawtooth'; osc.frequency.setValueAtTime(130, ctx.currentTime);
         gain.gain.setValueAtTime(0.1, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.5);
+      } else {
+        // Only play warning sounds in Work Mode
+        if (modeRef.current !== 'work') return;
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(120, ctx.currentTime);
+        gain.gain.setValueAtTime(0.05, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3);
       }
-      osc.start(); osc.stop(ctx.currentTime + 0.4);
+      osc.start(); osc.stop(ctx.currentTime + 0.5);
     } catch (e) {}
   };
 
-  // --- AI State Machine ---
-  const onAiResults = useCallback((results) => {
-    const { mode, isActive } = sessionRef.current;
-    let currentlySeen = false;
+  // --- App Switch Protection ---
+  useEffect(() => {
+    const handleVisibility = () => {
+      // Penalty only if ACTIVE and in WORK mode
+      if (document.hidden && isActiveRef.current && modeRef.current === 'work') {
+        setAppSwitches(s => s + 1);
+        playSound('alert');
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibility);
+    return () => document.removeEventListener("visibilitychange", handleVisibility);
+  }, []);
+
+  // --- AI Gaze Detection ---
+  const onResults = useCallback((results) => {
+    const isWorkMode = modeRef.current === 'work';
+    const isCurrentlyActive = isActiveRef.current;
+
     if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
       const landmarks = results.multiFaceLandmarks[0];
       const nose = landmarks[1];
-      currentlySeen = Math.abs(nose.x - 0.5) < 0.12 && nose.y > 0.15 && nose.y < 0.85;
-    }
-
-    if (isFocusedRef.current !== currentlySeen) {
-      isFocusedRef.current = currentlySeen;
-      setIsFocused(currentlySeen);
-      if (!currentlySeen && isActive && mode === 'work') {
-        statsRef.current.distractions += 1;
-        setDistractions(statsRef.current.distractions);
-        playEffect('alert');
+      const leftEye = landmarks[33];
+      const rightEye = landmarks[263];
+      const horizontalOffset = Math.abs(nose.x - (leftEye.x + rightEye.x) / 2);
+      
+      // Focus check
+      const currentFocused = horizontalOffset < 0.08 && nose.y > 0.2 && nose.y < 0.8;
+      
+      if (currentFocused !== lastFocusState.current) {
+        setIsFocused(currentFocused);
+        // Penalty only if in WORK mode and timer is ACTIVE
+        if (!currentFocused && isCurrentlyActive && isWorkMode) {
+          setDistractions(d => d + 1);
+          playSound('alert');
+        }
+        lastFocusState.current = currentFocused;
       }
+    } else if (lastFocusState.current) {
+      setIsFocused(false);
+      // Penalty for leaving frame
+      if (isCurrentlyActive && isWorkMode) {
+        setDistractions(d => d + 1);
+        playSound('alert');
+      }
+      lastFocusState.current = false;
     }
   }, []);
 
@@ -161,245 +133,243 @@ export default function App() {
     if (faceMeshRef.current) return true;
     setIsAiLoading(true);
     try {
-      const load = (src) => new Promise((res, rej) => {
-        const s = document.createElement('script'); s.src = src; s.onload = res; s.onerror = rej; document.head.appendChild(s);
+      const load = (src) => new Promise(r => {
+        const s = document.createElement('script'); s.src = src; s.onload = r; document.head.appendChild(s);
       });
       await load("https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js");
       await load("https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js");
+      
       const fm = new window.FaceMesh({ locateFile: (f) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${f}` });
       fm.setOptions({ maxNumFaces: 1, refineLandmarks: true, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
-      fm.onResults(onAiResults);
+      fm.onResults(onResults);
       faceMeshRef.current = fm;
-      const cam = new window.Camera(videoRef.current, { onFrame: async () => await fm.send({ image: videoRef.current }), width: 640, height: 480 });
+
+      const cam = new window.Camera(videoRef.current, { 
+        onFrame: async () => await fm.send({ image: videoRef.current }), 
+        width: 640, height: 480 
+      });
       await cam.start();
-      setIsAiLoading(false); return true;
-    } catch (e) { 
-      setIsAiLoading(false); 
-      setError("Camera or AI scripts failed to load. Check permissions.");
-      return false; 
+      setIsAiLoading(false);
+      setIsAiActive(true);
+      return true;
+    } catch (e) {
+      setIsAiLoading(false);
+      return false;
     }
   };
 
-  const toggleFocus = async () => {
+  // --- Timer Engine ---
+  const toggle = async () => {
     if (!audioCtxRef.current) audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)();
     if (audioCtxRef.current.state === 'suspended') await audioCtxRef.current.resume();
+
     if (!isActive) {
       const ok = await initAi();
       if (ok) {
+        try { if (document.documentElement.requestFullscreen) document.documentElement.requestFullscreen(); } catch(e) {}
         setIsActive(true);
-        if (ambientType !== 'off') startAmbient(ambientType);
       }
     } else {
-      setIsActive(false); stopAmbient();
+      setIsActive(false);
     }
   };
 
-  // --- Global Listeners ---
-  useEffect(() => {
-    const handleVis = () => {
-      if (document.hidden && sessionRef.current.isActive && sessionRef.current.mode === 'work') {
-        statsRef.current.appSwitches += 1;
-        setAppSwitches(statsRef.current.appSwitches);
-        playEffect('alert');
-      }
-    };
-    document.addEventListener("visibilitychange", handleVis);
-
-    const initFirebase = async () => {
-      try {
-        const res = await signInAnonymously(auth);
-        const u = res.user;
-        setUser(u);
-        // RULE 1: STRICT PATH
-        const q = collection(db, 'artifacts', APP_ID, 'users', u.uid, 'sessions');
-        onSnapshot(q, (snap) => {
-          const logs = snap.docs.map(d => d.data());
-          setHistory(logs.sort((a,b) => b.timestamp - a.timestamp));
-        });
-      } catch (e) { console.error("Auth Error", e); }
-    };
-    initFirebase();
-
-    if ('getBattery' in navigator) {
-      navigator.getBattery().then(batt => {
-        const up = () => setBattery({ level: Math.round(batt.level * 100), charging: batt.charging });
-        up(); batt.addEventListener('levelchange', up);
-      });
-    }
-
-    return () => document.removeEventListener("visibilitychange", handleVis);
-  }, []);
-
-  // --- Timer Engine ---
   useEffect(() => {
     if (isActive && (isFocused || mode === 'shortBreak') && timeLeft > 0) {
       timerRef.current = setInterval(() => setTimeLeft(t => t - 1), 1000);
     } else {
       clearInterval(timerRef.current);
     }
-    
-    if (timeLeft === 0 && isActive) {
-      setIsActive(false); stopAmbient(); playEffect('end');
-      if (user && mode === 'work') {
-        const score = Math.max(0, 100 - (statsRef.current.distractions * 5) - (statsRef.current.appSwitches * 15));
-        const col = collection(db, 'artifacts', APP_ID, 'users', user.uid, 'sessions');
-        addDoc(col, {
-          distractions: statsRef.current.distractions,
-          score, objective: settings.objective, timestamp: Date.now(), duration: settings.work
-        });
-      }
-      const nextMode = mode === 'work' ? 'shortBreak' : 'work';
-      setMode(nextMode);
-      setTimeLeft(settings[nextMode === 'work' ? 'work' : 'shortBreak'] * 60);
-      setDistractions(0); setAppSwitches(0); statsRef.current = { distractions: 0, appSwitches: 0 };
-    }
+    if (timeLeft === 0 && isActive) complete();
     return () => clearInterval(timerRef.current);
   }, [isActive, isFocused, timeLeft, mode]);
 
-  // Error Boundary View
-  if (error) {
-    return <div className="min-h-screen bg-black text-white flex flex-col items-center justify-center p-12 text-center">
-      <AlertTriangle className="text-red-500 mb-4" size={48} />
-      <h1 className="text-xl font-bold mb-2">System Interrupted</h1>
-      <p className="text-white/40 text-sm">{error}</p>
-      <button onClick={() => window.location.reload()} className="mt-6 px-6 py-2 bg-white text-black rounded-lg font-bold">Restart Engine</button>
-    </div>
-  }
+  const complete = async () => {
+    setIsActive(false);
+    playSound('end');
+    
+    // Save to Firestore ONLY if completing a WORK session
+    if (user && mode === 'work') {
+      try {
+        await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'sessions'), {
+          distractions,
+          appSwitches,
+          timestamp: Date.now(),
+          duration: settings.work,
+          mode: 'work'
+        });
+      } catch (e) { console.error("History save failed", e); }
+    }
+
+    const next = mode === 'work' ? 'shortBreak' : 'work';
+    setMode(next);
+    setTimeLeft(settings[next] * 60);
+    setDistractions(0); 
+    setAppSwitches(0);
+  };
+
+  // --- Auth & Data Fetching ---
+  useEffect(() => {
+    const startAuth = async () => {
+      if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) await signInWithCustomToken(auth, __initial_auth_token);
+      else await signInAnonymously(auth);
+    };
+    startAuth();
+    onAuthStateChanged(auth, setUser);
+  }, []);
+
+  useEffect(() => {
+    if (!user) return;
+    const q = collection(db, 'artifacts', appId, 'users', user.uid, 'sessions');
+    return onSnapshot(q, (snap) => {
+      const logs = snap.docs.map(d => ({id: d.id, ...d.data()}));
+      setHistory(logs.sort((a,b) => b.timestamp - a.timestamp));
+    });
+  }, [user]);
+
+  const progress = (timeLeft / (settings[mode] * 60)) * 100;
 
   return (
-    <div className="min-h-screen w-full bg-black flex flex-col items-center justify-center text-white overflow-hidden font-sans relative select-none">
-      {/* Background Cinematic Layer */}
-      <div className="absolute inset-0 z-0">
-        <video ref={videoRef} autoPlay muted playsInline className={`h-full w-full object-cover transition-all duration-1000 grayscale ${isActive ? 'opacity-30 scale-105' : 'opacity-10 blur-3xl'}`} />
-        <div className="absolute inset-0 bg-gradient-to-b from-black/90 via-transparent to-black/90" />
-        <div className={`absolute inset-0 transition-all duration-700 pointer-events-none ${!isFocused && isActive && mode === 'work' ? 'bg-red-500/10 shadow-[inset_0_0_120px_rgba(255,0,0,0.4)]' : ''}`} />
+    <div className="relative min-h-screen w-full bg-black flex flex-col items-center justify-center text-white overflow-hidden font-sans">
+      
+      {/* Background Full View */}
+      <div className="absolute inset-0 z-0 bg-black">
+        <video ref={videoRef} autoPlay muted playsInline className={`h-full w-full object-cover transition-all duration-1000 grayscale ${isActive && (isFocused || mode === 'shortBreak') ? 'opacity-40 blur-none' : 'opacity-10 blur-3xl'}`} />
+        <div className="absolute inset-0 bg-gradient-to-b from-black/80 via-transparent to-black/80" />
+        <div className={`absolute inset-0 transition-all duration-500 pointer-events-none ${!isFocused && isActive && mode === 'work' ? 'bg-red-500/10 shadow-[inset_0_0_100px_rgba(255,0,0,0.2)]' : ''}`} />
       </div>
 
-      <header className="absolute top-0 w-full p-4 flex justify-between z-50">
-        <div className="flex flex-col">
-          <span className="text-[10px] font-black tracking-[0.4em] opacity-30 uppercase italic">Aura Sync Pro</span>
-          <div className="flex items-center gap-3 mt-1 text-[8px] font-bold text-neutral-500 uppercase">
-            <span className="flex items-center gap-1 text-orange-500"><Flame size={10}/> {history.length}</span>
-            <span className={battery.level < 20 ? 'text-red-500' : ''}><Battery size={10} /> {battery.level}%</span>
-            <span>{isOnline ? <Wifi size={10} className="text-emerald-500"/> : <WifiOff size={10} className="text-red-500"/>}</span>
+      {/* Top HUD */}
+      <header className="absolute top-0 left-0 right-0 p-6 flex justify-between items-center z-50">
+        <div className="flex flex-col gap-1">
+          <div className="flex items-center gap-3">
+            <div className={`w-1.5 h-1.5 rounded-full ${isAiActive ? 'bg-[#00ff88] shadow-[0_0_10px_#00ff88]' : 'bg-white/20'}`} />
+            <span className="text-[10px] font-black tracking-[0.4em] uppercase opacity-40">Neural Sync</span>
+          </div>
+          <div className="text-[8px] font-bold text-neutral-600 uppercase tracking-widest">
+            {mode === 'work' ? 'Tracking Active' : 'Resting: All actions allowed'}
           </div>
         </div>
         <div className="flex gap-2">
-          <button onClick={() => setShowHistory(true)} className="p-2.5 bg-white/5 rounded-xl border border-white/5 active:scale-90"><History size={16}/></button>
-          <button onClick={() => setShowEditor(true)} className="p-2.5 bg-white/5 rounded-xl border border-white/5 active:scale-90"><Settings size={16}/></button>
+          <button onClick={() => setShowHistory(true)} className="p-3 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 transition-all backdrop-blur-md"><History size={18} /></button>
+          <button onClick={() => setShowEditor(true)} className="p-3 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 transition-all backdrop-blur-md"><Settings size={18} /></button>
         </div>
       </header>
 
-      <main className="relative z-10 flex flex-col items-center w-full max-w-xs px-4 scale-95 md:scale-100">
-        {isActive && mode === 'work' && (
-          <div className="mb-4 px-4 py-1.5 bg-white/5 border border-white/10 rounded-full backdrop-blur-md animate-in fade-in slide-in-from-top-4">
-             <span className="text-[10px] font-black uppercase tracking-widest text-[#00ff88] flex items-center gap-2 italic"><Target size={12}/> {settings.objective}</span>
-          </div>
-        )}
-
-        <div className="flex bg-white/5 backdrop-blur-3xl rounded-full p-1 border border-white/5 mb-8">
+      {/* Main Timer Display */}
+      <main className="relative z-10 flex flex-col items-center w-full max-w-sm px-8">
+        
+        {/* Mode Switcher */}
+        <div className="flex bg-white/5 backdrop-blur-2xl rounded-full p-1 border border-white/5 mb-10">
           {['work', 'shortBreak'].map(m => (
-            <button key={m} onClick={() => { setMode(m); setIsActive(false); setTimeLeft(settings[m === 'work' ? 'work' : 'shortBreak']*60); }} className={`px-6 py-2 rounded-full text-[10px] font-black uppercase tracking-widest transition-all ${mode === m ? 'bg-white text-black shadow-2xl' : 'text-white/30 hover:text-white'}`}>
+            <button key={m} onClick={() => { setMode(m); setIsActive(false); setTimeLeft(settings[m]*60); }} className={`px-6 py-2 rounded-full text-[9px] font-black uppercase tracking-widest transition-all ${mode === m ? 'bg-white text-black' : 'text-white/40 hover:text-white'}`}>
               {m === 'work' ? 'Focus' : 'Break'}
             </button>
           ))}
         </div>
 
-        <div className="relative flex items-center justify-center mb-8">
-          <svg width="210" height="210" className="-rotate-90 absolute"><circle cx="105" cy="105" r="90" fill="none" stroke="rgba(255,255,255,0.05)" strokeWidth="2" /></svg>
-          <svg width="210" height="210" className="-rotate-90">
-            <circle cx="105" cy="105" r="90" fill="none" stroke={!isFocused && isActive && mode === 'work' ? '#ff4d4d' : '#00ff88'} strokeWidth="3" strokeDasharray="565" strokeDashoffset={565 - ((timeLeft/(settings[mode === 'work' ? 'work' : 'shortBreak']*60))*565)} strokeLinecap="round" className="transition-all duration-1000 ease-linear" />
+        {/* Circular Clock */}
+        <div className="relative flex items-center justify-center mb-10">
+          <svg width="240" height="240" className="-rotate-90">
+            <circle cx="120" cy="120" r="105" fill="none" stroke="rgba(255,255,255,0.03)" strokeWidth="3" />
+            <circle cx="120" cy="120" r="105" fill="none" stroke={!isFocused && isActive && mode === 'work' ? '#ff4d4d' : '#00ff88'} strokeWidth="3" strokeDasharray="660" strokeDashoffset={660 - (progress / 100) * 660} strokeLinecap="round" className="transition-all duration-1000 ease-linear" />
           </svg>
           <div className="absolute text-center">
-            <h1 className="text-6xl font-black tabular-nums tracking-tighter leading-none">{Math.floor(timeLeft/60).toString().padStart(2,'0')}:{(timeLeft%60).toString().padStart(2,'0')}</h1>
-            <div className="text-[7px] font-bold uppercase tracking-[0.3em] text-white/30 mt-2">{mode === 'work' ? 'Neural Link' : 'System Rest'}</div>
+            <h1 className={`text-7xl md:text-8xl font-black tracking-tighter tabular-nums leading-none transition-all ${!isFocused && isActive && mode === 'work' ? 'text-red-500 blur-sm' : 'text-white'}`}>
+              {Math.floor(timeLeft/60).toString().padStart(2,'0')}:{(timeLeft%60).toString().padStart(2,'0')}
+            </h1>
           </div>
         </div>
 
-        <div className="grid grid-cols-2 gap-2 w-full mb-8">
-          <div className="bg-white/5 border border-white/5 p-4 rounded-[2rem] text-center backdrop-blur-sm">
-            <div className="text-[7px] font-bold text-white/30 uppercase tracking-widest mb-0.5">Gaze Pen</div>
-            <div className={`text-2xl font-black ${distractions > 0 && mode === 'work' ? 'text-red-500' : 'text-white/30'}`}>{mode === 'work' ? distractions : '--'}</div>
+        {/* Real-time Stats */}
+        <div className="grid grid-cols-2 gap-3 w-full mb-10">
+          <div className="bg-white/5 border border-white/10 p-4 rounded-2xl text-center backdrop-blur-md">
+            <div className="flex items-center justify-center gap-2 text-[8px] font-bold text-white/30 uppercase tracking-widest mb-1"><Eye size={10}/> Gaze</div>
+            <div className={`text-xl font-bold ${distractions > 0 && mode === 'work' ? 'text-red-500' : 'text-white/20'}`}>{mode === 'work' ? distractions : '--'}</div>
           </div>
-          <div className="bg-white/5 border border-white/5 p-4 rounded-[2rem] text-center backdrop-blur-sm">
-            <div className="text-[7px] font-bold text-white/30 uppercase tracking-widest mb-0.5">App Exit</div>
-            <div className={`text-2xl font-black ${appSwitches > 0 && mode === 'work' ? 'text-orange-500' : 'text-white/30'}`}>{mode === 'work' ? appSwitches : '--'}</div>
+          <div className="bg-white/5 border border-white/10 p-4 rounded-2xl text-center backdrop-blur-md">
+            <div className="flex items-center justify-center gap-2 text-[8px] font-bold text-white/30 uppercase tracking-widest mb-1"><Smartphone size={10}/> App Exit</div>
+            <div className={`text-xl font-bold ${appSwitches > 0 && mode === 'work' ? 'text-orange-500' : 'text-white/20'}`}>{mode === 'work' ? appSwitches : '--'}</div>
           </div>
         </div>
 
+        {/* Action Buttons */}
         <div className="flex items-center gap-6">
-          <button onClick={toggleFocus} disabled={isAiLoading} className={`h-16 w-16 rounded-full flex items-center justify-center transition-all active:scale-95 ${isActive ? 'bg-white/10' : 'bg-white text-black shadow-2xl'}`}>
+          <button onClick={toggle} disabled={isAiLoading} className={`h-20 w-20 rounded-full flex items-center justify-center transition-all active:scale-95 ${isActive ? 'bg-white/10 text-white border border-white/20' : 'bg-white text-black shadow-xl hover:scale-105'}`}>
             {isAiLoading ? <Loader2 size={24} className="animate-spin" /> : isActive ? <Pause size={32} fill="currentColor" /> : <Play size={32} fill="currentColor" className="ml-1" />}
           </button>
-          <button onClick={() => { setTimeLeft(settings.work*60); setIsActive(false); stopAmbient(); setDistractions(0); setAppSwitches(0); statsRef.current = {distractions:0, appSwitches:0}; isFocusedRef.current = true; setIsFocused(true); }} className="h-12 w-12 rounded-full bg-white/5 border border-white/5 flex items-center justify-center text-white/30 active:scale-90"><RotateCcw size={20}/></button>
+          <button onClick={() => { setTimeLeft(settings[mode]*60); setIsActive(false); setDistractions(0); setAppSwitches(0); }} className="h-14 w-14 rounded-full bg-white/5 border border-white/5 flex items-center justify-center text-white/30 hover:text-white transition-all"><RotateCcw size={20}/></button>
         </div>
       </main>
 
+      {/* Editor Modal */}
       {showEditor && (
-        <div className="fixed inset-0 z-[100] bg-black/98 p-8 flex flex-col justify-center backdrop-blur-3xl overflow-y-auto">
-          <div className="max-w-xs mx-auto w-full space-y-8">
-            <div className="flex justify-between items-center mb-4">
-               <h2 className="text-3xl font-black italic tracking-tighter italic">Parameters</h2>
-               <X onClick={() => setShowEditor(false)} className="text-white/20 cursor-pointer" />
+        <div className="fixed inset-0 z-[100] bg-black/95 backdrop-blur-2xl flex items-center justify-center p-6 text-left">
+          <div className="bg-neutral-900 w-full max-w-sm rounded-[2rem] p-8 border border-white/5 relative">
+            <button onClick={() => setShowEditor(false)} className="absolute top-8 right-8 text-white/20 hover:text-white"><X /></button>
+            <h2 className="text-xl font-black italic tracking-tighter mb-8">Parameters</h2>
+            <div className="space-y-8">
+              {[{l:'Focus Work', k:'work', i:<Zap size={12}/>}, {l:'Short Break', k:'shortBreak', i:<Coffee size={12}/>}].map(i => (
+                <div key={i.k} className="space-y-3">
+                  <div className="flex justify-between text-[10px] font-bold uppercase tracking-widest text-white/40">
+                    <span className="flex items-center gap-2">{i.i} {i.l}</span>
+                    <span className="text-white">{settings[i.k]}m</span>
+                  </div>
+                  <input type="range" min="1" max="90" value={settings[i.k]} onChange={e => {
+                    const v = parseInt(e.target.value);
+                    setSettings(s => ({...s, [i.k]: v}));
+                    if(mode === i.k) setTimeLeft(v*60);
+                  }} className="w-full accent-[#00ff88] h-1 bg-white/10 rounded-full appearance-none" />
+                </div>
+              ))}
+              <button onClick={() => setShowEditor(false)} className="w-full bg-white text-black py-4 rounded-xl font-bold text-[10px] uppercase tracking-widest mt-4">Save Config</button>
             </div>
-            <div className="space-y-4">
-              <div className="space-y-1.5">
-                 <label className="text-[8px] font-bold uppercase tracking-widest text-white/30 ml-2">Neural Objective</label>
-                 <input type="text" value={settings.objective} onChange={e => setSettings({...settings, objective: e.target.value})} className="w-full bg-white/5 border border-white/10 p-4 rounded-3xl text-xs font-black outline-none focus:border-[#00ff88]/30 transition-all text-white" />
-              </div>
-              <div className="space-y-2">
-                <div className="flex justify-between text-[9px] uppercase font-bold text-white/40 tracking-widest">Focus <span>{settings.work}m</span></div>
-                <input type="range" min="1" max="90" value={settings.work} onChange={e => { const v = parseInt(e.target.value); setSettings({...settings, work: v}); if(mode==='work') setTimeLeft(v*60); }} className="w-full h-1 bg-white/10 accent-[#00ff88] rounded-full appearance-none" />
-              </div>
-              <div className="space-y-2">
-                <div className="flex justify-between text-[9px] uppercase font-bold text-white/40 tracking-widest">Break <span>{settings.shortBreak}m</span></div>
-                <input type="range" min="1" max="30" value={settings.shortBreak} onChange={e => { const v = parseInt(e.target.value); setSettings({...settings, shortBreak: v}); if(mode==='shortBreak') setTimeLeft(v*60); }} className="w-full h-1 bg-white/10 accent-[#00ff88] rounded-full appearance-none" />
-              </div>
-              <div className="grid grid-cols-3 gap-2">
-                {['off', 'alpha', 'theta', 'gamma', 'rain'].map(t => (
-                  <button key={t} onClick={() => { setAmbientType(t); if(isActive) startAmbient(t); }} className={`py-3 rounded-xl text-[9px] font-black uppercase border transition-all ${ambientType === t ? 'border-[#00ff88] text-[#00ff88] bg-[#00ff88]/5' : 'border-white/10 text-white/20'}`}>{t}</button>
-                ))}
-              </div>
-            </div>
-            <button onClick={() => setShowEditor(false)} className="w-full bg-white text-black py-4 rounded-[2rem] font-black uppercase text-[10px] tracking-[0.2em] shadow-2xl">Confirm Logic</button>
           </div>
         </div>
       )}
 
+      {/* Archive Modal */}
       {showHistory && (
-        <div className="fixed inset-0 z-[100] bg-black p-8 overflow-y-auto backdrop-blur-3xl">
-          <div className="max-w-xl mx-auto">
-            <header className="flex justify-between items-center mb-12">
-              <h2 className="text-4xl font-black italic tracking-tighter">Archive</h2>
-              <X onClick={() => setShowHistory(false)} className="text-white/20 h-10 w-10 cursor-pointer" />
-            </header>
-            {history.length === 0 ? <p className="text-center text-white/10 py-32 font-black uppercase tracking-[0.5em] text-[8px]">Neural archive empty</p> : (
-              <div className="space-y-4 pb-20">
-                {history.map((s, i) => (
-                  <div key={i} className="bg-white/5 border border-white/5 p-6 rounded-[2.5rem] flex justify-between items-center">
-                    <div className="text-left">
-                      <div className="text-[10px] font-bold text-white/20 uppercase mb-2 tracking-widest">{new Date(s.timestamp).toLocaleDateString()}</div>
-                      <div className="text-lg font-bold mb-1">{s.objective || "Protocol Session"}</div>
-                      <div className="text-[10px] text-[#00ff88] font-black tracking-widest uppercase">{s.score}% Accuracy</div>
+        <div className="fixed inset-0 z-[100] bg-black p-8 overflow-y-auto">
+          <div className="max-w-md mx-auto">
+            <div className="flex justify-between items-center mb-16">
+              <h2 className="text-4xl font-black italic tracking-tighter">Neural Archive</h2>
+              <button onClick={() => setShowHistory(false)} className="p-3 bg-white/5 rounded-full"><X /></button>
+            </div>
+            <div className="space-y-4">
+              {history.length === 0 ? <p className="text-center text-white/20 py-20 font-bold uppercase text-[10px]">No logs detected</p> : history.map((s, idx) => (
+                <div key={idx} className="bg-white/5 border border-white/5 p-6 rounded-3xl flex justify-between items-center">
+                  <div className="text-left">
+                    <div className="text-[8px] font-bold text-white/30 uppercase mb-1">{new Date(s.timestamp).toLocaleDateString()} at {new Date(s.timestamp).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</div>
+                    <div className="font-bold text-sm">Focus Block Complete</div>
+                    <div className="text-[10px] text-[#00ff88] font-bold">{s.duration} minutes</div>
+                  </div>
+                  <div className="flex gap-4">
+                    <div className="text-center">
+                      <span className="text-[8px] text-white/30 uppercase block">Gaze</span>
+                      <span className="text-xs font-bold text-red-500">{s.distractions}</span>
                     </div>
                     <div className="text-center">
-                      <span className="text-[9px] text-white/20 uppercase block font-black mb-1">Gaze</span>
-                      <span className="text-2xl font-black text-red-500">{s.distractions}</span>
+                      <span className="text-[8px] text-white/30 uppercase block">Exit</span>
+                      <span className="text-xs font-bold text-orange-500">{s.appSwitches || 0}</span>
                     </div>
                   </div>
-                ))}
-              </div>
-            )}
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       )}
 
       <style dangerouslySetInnerHTML={{ __html: `
-        input[type='range']::-webkit-slider-thumb { -webkit-appearance: none; height: 16px; width: 16px; border-radius: 50%; background: white; border: 3px solid black; cursor: pointer; }
+        input[type='range']::-webkit-slider-thumb { -webkit-appearance: none; height: 16px; width: 16px; border-radius: 50%; background: white; cursor: pointer; border: 3px solid black; }
         .tabular-nums { font-variant-numeric: tabular-nums; }
         ::-webkit-scrollbar { width: 4px; }
         ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 10px; }
       `}} />
+
     </div>
   );
 }
+
+        
